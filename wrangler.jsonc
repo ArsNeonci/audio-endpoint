@@ -1,0 +1,6 @@
+// Cloudflare Worker that only serves the static files of this repository (the signed address file).
+{
+  "name": "audio-endpoint",
+  "compatibility_date": "2026-11-01",
+  "assets": { "directory": "." }
+}
