@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Quản lý gia hạn</title>
+<style>
+  body { font: 15px/1.45 system-ui, sans-serif; margin: 0; background: #f5f6f8; color: #1d2330; }
+  header, main { max-width: 1100px; margin: 0 auto; padding: 12px 16px; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; }
+  h1 { font-size: 20px; margin: 0; flex: 1; }
+  section { background: #fff; border: 1px solid #dde1e7; border-radius: 8px; padding: 12px 14px; margin: 12px 0; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eef0f3; vertical-align: top; }
+  th { font-size: 13px; color: #5b6475; }
+  button { font: inherit; padding: 5px 10px; border-radius: 6px; border: 1px solid #b8c0cc; background: #fff; cursor: pointer; }
+  button.main { background: #1f5fd1; color: #fff; border-color: #1f5fd1; }
+  button.danger { color: #b3261e; border-color: #e2a8a4; }
+  button:disabled { opacity: .5; cursor: default; }
+  input, textarea, select { font: inherit; padding: 4px 6px; border: 1px solid #b8c0cc; border-radius: 6px; }
+  .OK { color: #1b7a3a; } .DUE_SOON { color: #a15c00; font-weight: 600; } .OVERDUE { color: #b3261e; font-weight: 700; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .muted { color: #5b6475; font-size: 13px; }
+  .dirty { background: #fff4d6; padding: 6px 10px; border-radius: 6px; }
+  code { font-size: 13px; }
+  #log { white-space: pre-wrap; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Quản lý gia hạn hàng tháng</h1>
+  <span class="muted" id="who"></span>
+  <button id="settingsButton">Cài đặt</button>
+</header>
+<main>
+  <section id="settings" hidden>
+    <p class="muted">Trang này không chứa dữ liệu. Danh sách khách nằm trong repo riêng; tệp app đọc (<code>status.json</code>) nằm trong repo công khai và chỉ có mã thiết bị và ngày.
+      Cần một token GitHub (fine-grained) chỉ có quyền <b>Contents: Read and write</b> trên đúng hai repo dưới đây. Token chỉ lưu trong trình duyệt này.</p>
+    <div class="bar"><label>Token <input id="token" type="password" size="44" autocomplete="off"></label></div>
+    <div class="bar"><label>Repo riêng (danh sách khách) <input id="privateRepo" size="30"></label>
+      <label>Repo công khai (tệp cho app) <input id="publicRepo" size="30"></label></div>
+    <div class="bar"><label>Ngày khoá hàng tháng <input id="lockDay" type="number" min="1" max="31" size="3"></label>
+      <label>Dùng thử khách mới (ngày) <input id="trialDays" type="number" min="0" max="60" size="3"></label>
+      <button class="main" id="saveSettings">Lưu và tải lại</button></div>
+  </section>
+
+  <section>
+    <div class="bar">
+      <b id="period"></b>
+      <span class="muted" id="published"></span>
+    </div>
+    <div class="bar" style="margin-top:8px">
+      <label>Lời nhắn hiện trong app: <input id="message" size="60" maxlength="300" placeholder="Ví dụ: Chuyển khoản ngày 15, liên hệ 09xx"></label>
+      <label title="Thiết bị không có trong danh sách sẽ bị khoá"><input type="checkbox" id="strict"> Khoá thiết bị không có trong danh sách</label>
+    </div>
+  </section>
+
+  <section>
+    <table>
+      <thead><tr><th><input type="checkbox" id="all" title="Chọn tất cả"></th><th>Khách</th><th>Liên hệ / ghi chú</th><th>Thiết bị</th><th>Hạn dùng (giờ VN)</th><th>Tình trạng</th><th></th></tr></thead>
+      <tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody>
+    </table>
+    <div class="bar" style="margin-top:10px">
+      <span id="picked" class="muted"></span>
+      <button class="main" data-extend="1">Gia hạn 1 tháng</button>
+      <button data-extend="3">Gia hạn 3 tháng</button>
+      <button class="danger" id="lockPicked">Khoá ngay</button>
+      <span style="flex:1"></span>
+      <button id="addCustomer">+ Thêm khách / thiết bị</button>
+    </div>
+  </section>
+
+  <section>
+    <div class="bar">
+      <span id="pending" class="muted">Chưa có thay đổi.</span>
+      <span style="flex:1"></span>
+      <button class="main" id="publish" disabled>Xuất bản</button>
+    </div>
+    <div class="bar" style="margin-top:8px">
+      <button id="extendAll" title="Khi lỡ quên một tháng: gia hạn mọi thiết bị thêm một tháng">Cứu: gia hạn tất cả thêm 1 tháng</button>
+    </div>
+    <div id="log" class="muted"></div>
+  </section>
+</main>
+
+<script src="logic.js"></script>
+<script>
+"use strict";
+const L = window.PaidLogic;
+const $ = (id) => document.getElementById(id);
+const store = {
+  get: (k, d) => localStorage.getItem("paid." + k) ?? d,
+  set: (k, v) => localStorage.setItem("paid." + k, v),
+};
+let data = null, dataSha = null, statusSha = null, serial = 0, dirty = false;
+
+const cfg = () => ({
+  token: store.get("token", ""), privateRepo: store.get("privateRepo", "ArsNeonci/licence-hub"),
+  publicRepo: store.get("publicRepo", "ArsNeonci/audio-endpoint"), lockDay: Number(store.get("lockDay", "16")), trialDays: Number(store.get("trialDays", "2")),
+});
+const vnTime = (iso) => iso ? new Date(iso).toLocaleString("vi-VN", {timeZone: "Asia/Ho_Chi_Minh", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit"}) : "—";
+const show = (code) => code.replace(/(.{4})(?=.)/g, "$1-");
+const say = (text) => { $("log").textContent = new Date().toLocaleTimeString("vi-VN") + "  " + text + "\n" + $("log").textContent; };
+const b64 = (text) => { const bytes = new TextEncoder().encode(text); let s = ""; bytes.forEach((b) => { s += String.fromCharCode(b); }); return btoa(s); };
+const unb64 = (text) => new TextDecoder().decode(Uint8Array.from(atob(text.replace(/\s/g, "")), (c) => c.charCodeAt(0)));
+
+async function github(method, repo, path, body) {
+  const response = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, {
+    method, headers: {Authorization: "Bearer " + cfg().token, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
+    body: body ? JSON.stringify(body) : undefined, cache: "no-store",
+  });
+  if (method === "GET" && response.status === 404) return null;
+  if (!response.ok) {
+    let detail = ""; try { detail = (await response.json()).message || ""; } catch { /* not json */ }
+    throw new Error(`GitHub ${response.status} ${detail} (${repo}/${path})`);
+  }
+  return response.json();
+}
+
+async function load() {
+  const c = cfg();
+  if (!c.token) { $("settings").hidden = false; $("rows").innerHTML = '<tr><td colspan="7">Nhập token GitHub ở Cài đặt.</td></tr>'; return; }
+  const [file, status] = await Promise.all([github("GET", c.privateRepo, "customers.json"), github("GET", c.publicRepo, "status.json")]);
+  data = file ? JSON.parse(unb64(file.content)) : {version: 1, message: "", strict: false, customers: []};
+  dataSha = file ? file.sha : null;
+  statusSha = status ? status.sha : null;
+  const live = status ? JSON.parse(unb64(status.content)) : null;
+  serial = live ? live.serial : 0;
+  $("published").textContent = live ? `Đang chạy trên GitHub: serial ${live.serial}, xuất bản ${vnTime(live.updated)}` : "Chưa xuất bản lần nào.";
+  $("message").value = data.message || ""; $("strict").checked = Boolean(data.strict);
+  $("who").textContent = c.privateRepo;
+  dirty = false; render();
+}
+
+function devices() { const all = []; (data.customers || []).forEach((customer, ci) => (customer.devices || []).forEach((device, di) => all.push({customer, device, ci, di}))); return all; }
+
+function render() {
+  const now = Date.now(), c = cfg();
+  const next = L.nextLock(now, c.lockDay);
+  const unpaid = devices().filter(({device}) => Date.parse(device.valid_until) <= next).length;
+  $("period").textContent = `Kỳ này: khoá lúc ${vnTime(new Date(next).toISOString())}. ${unpaid ? unpaid + " thiết bị sẽ bị khoá nếu chưa gia hạn." : "Mọi thiết bị đã gia hạn qua kỳ này."}`;
+  const rows = devices().map(({customer, device, ci, di}) => {
+    const st = L.state(device.valid_until, now);
+    const label = {OK: "Đang dùng", DUE_SOON: "Sắp hết hạn", OVERDUE: "ĐÃ KHOÁ"}[st];
+    return `<tr><td><input type="checkbox" class="pick" data-key="${ci}.${di}"></td>
+      <td>${esc(customer.name)}</td><td>${esc(customer.contact || "")}<div class="muted">${esc(customer.note || "")}</div></td>
+      <td><code>${show(device.code)}</code><div class="muted">${esc(device.label || "")}</div></td>
+      <td>${vnTime(device.valid_until)}</td><td class="${st}">${label}</td>
+      <td><button data-edit="${ci}">Sửa</button> ${st === "OVERDUE" ? `<button class="main" data-open="${ci}.${di}">Mở khoá</button>` : ""}</td></tr>`;
+  });
+  $("rows").innerHTML = rows.join("") || '<tr><td colspan="7" class="muted">Chưa có khách nào. Bấm “Thêm khách / thiết bị”.</td></tr>';
+  $("publish").disabled = !dirty;
+  $("pending").textContent = dirty ? "Có thay đổi chưa xuất bản: bấm Xuất bản để app của khách nhận được." : "Chưa có thay đổi.";
+  $("pending").className = dirty ? "dirty" : "muted";
+  updatePicked();
+}
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (ch) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[ch]));
+const picked = () => [...document.querySelectorAll(".pick:checked")].map((box) => box.dataset.key.split(".").map(Number));
+function updatePicked() { $("picked").textContent = `Đã chọn ${picked().length} thiết bị:`; }
+function change(text) { dirty = true; say(text); render(); }
+
+function extendPicked(months) {
+  const list = picked(); if (!list.length) return alert("Chọn thiết bị cần gia hạn.");
+  list.forEach(([ci, di]) => { const device = data.customers[ci].devices[di]; device.valid_until = L.extend(device.valid_until, Date.now(), months, cfg().lockDay); });
+  change(`Gia hạn ${months} tháng cho ${list.length} thiết bị.`);
+}
+
+function addCustomer() {
+  const name = prompt("Tên khách (khách đã có thì nhập đúng tên để thêm thiết bị):"); if (!name) return;
+  let customer = data.customers.find((x) => x.name === name.trim());
+  if (!customer) { customer = {name: name.trim(), contact: prompt("Liên hệ (Zalo, điện thoại…):") || "", note: "", devices: []}; data.customers.push(customer); }
+  let code; try { code = L.cleanCode(prompt("Mã thiết bị (trong app: trang Giấy phép → Mã thiết bị):")); } catch (error) { return alert(error.message); }
+  if (devices().some(({device}) => device.code === code)) return alert("Mã thiết bị này đã có trong danh sách.");
+  const days = Number(prompt("Số ngày dùng thử trước khi trả tiền (0 = gia hạn luôn tới kỳ khoá tới):", String(cfg().trialDays)) || 0);
+  const until = days > 0 ? L.trial(Date.now(), days) : L.extend(null, Date.now(), 1, cfg().lockDay);
+  customer.devices.push({code, label: prompt("Tên thiết bị (ví dụ: PC nhà):") || "", valid_until: until, added: new Date().toISOString()});
+  change(`Thêm thiết bị ${show(code)} cho ${customer.name}, hạn ${vnTime(until)}.`);
+}
+
+function editCustomer(ci) {
+  const customer = data.customers[ci];
+  const action = prompt(`Sửa ${customer.name}: gõ 1 = đổi liên hệ, 2 = đổi ghi chú, 3 = đặt hạn dùng theo ngày, 4 = xoá một thiết bị, 5 = xoá khách`); if (!action) return;
+  if (action === "1") customer.contact = prompt("Liên hệ:", customer.contact || "") ?? customer.contact;
+  else if (action === "2") customer.note = prompt("Ghi chú:", customer.note || "") ?? customer.note;
+  else if (action === "3") {
+    const text = prompt("Hạn dùng mới (ngày/tháng/năm, khoá lúc 23:59 giờ VN), ví dụ 16/02/2027:"); if (!text) return;
+    const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(text.trim()); if (!m) return alert("Ngày không đúng dạng dd/mm/yyyy.");
+    const at = new Date(Date.UTC(+m[3], +m[2] - 1, +m[1], 23, 59, 59) - 7 * 3600000).toISOString().replace(/\.\d{3}Z$/, "Z");
+    customer.devices.forEach((device) => { device.valid_until = at; });
+  } else if (action === "4") {
+    const code = prompt("Mã thiết bị cần xoá:"); const before = customer.devices.length;
+    try { customer.devices = customer.devices.filter((device) => device.code !== L.cleanCode(code)); } catch (error) { return alert(error.message); }
+    if (before === customer.devices.length) return alert("Không thấy mã này.");
+  } else if (action === "5") { if (!confirm(`Xoá khách ${customer.name} và mọi thiết bị? App của họ sẽ không còn trong danh sách.`)) return; data.customers.splice(ci, 1); }
+  else return;
+  change(`Đã sửa ${customer.name}.`);
+}
+
+async function publish() {
+  const c = cfg(); $("publish").disabled = true;
+  try {
+    data.message = $("message").value.trim(); data.strict = $("strict").checked; data.version = 1;
+    // The live serial may have moved (another browser): read it again so the new file always has a higher one.
+    const live = await github("GET", c.publicRepo, "status.json");
+    if (live) { statusSha = live.sha; serial = Math.max(serial, JSON.parse(unb64(live.content)).serial || 0); }
+    const saved = await github("PUT", c.privateRepo, "customers.json", {message: "Customers and paid-until dates", content: b64(JSON.stringify(data, null, 2) + "\n"), ...(dataSha ? {sha: dataSha} : {})});
+    dataSha = saved.content.sha;
+    const status = L.statusFile(data, serial + 1, Date.now());
+    const out = await github("PUT", c.publicRepo, "status.json", {message: `Paid-until dates, serial ${status.serial}`, content: b64(JSON.stringify(status) + "\n"), ...(statusSha ? {sha: statusSha} : {})});
+    statusSha = out.content.sha; serial = status.serial; dirty = false;
+    say(`Đã xuất bản serial ${status.serial}. GitHub cần khoảng 1-3 phút để cập nhật; app đọc lại trong vòng 4 giờ (15 phút nếu đang bị khoá, hoặc ngay khi khách bấm Kiểm tra lại).`);
+    $("published").textContent = `Đang chạy trên GitHub: serial ${status.serial}, xuất bản ${vnTime(status.updated)}`;
+  } catch (error) { say("Lỗi: " + error.message + " — chưa xuất bản xong, bấm Xuất bản lại."); }
+  render();
+}
+
+$("settingsButton").onclick = () => { $("settings").hidden = !$("settings").hidden; };
+$("saveSettings").onclick = () => {
+  for (const key of ["token", "privateRepo", "publicRepo", "lockDay", "trialDays"]) if ($(key).value.trim()) store.set(key, $(key).value.trim());
+  $("token").value = ""; $("settings").hidden = true; load().catch((error) => say("Lỗi: " + error.message));
+};
+$("all").onchange = (event) => { document.querySelectorAll(".pick").forEach((box) => { box.checked = event.target.checked; }); updatePicked(); };
+$("rows").onclick = (event) => {
+  const target = event.target;
+  if (target.classList.contains("pick")) return updatePicked();
+  if (target.dataset.edit) return editCustomer(Number(target.dataset.edit));
+  if (target.dataset.open) {
+    const [ci, di] = target.dataset.open.split(".").map(Number); const device = data.customers[ci].devices[di];
+    device.valid_until = L.extend(null, Date.now(), 1, cfg().lockDay);
+    change(`Mở khoá ${show(device.code)} (${data.customers[ci].name}) tới ${vnTime(device.valid_until)}.`);
+  }
+};
+document.querySelectorAll("[data-extend]").forEach((button) => { button.onclick = () => extendPicked(Number(button.dataset.extend)); });
+$("lockPicked").onclick = () => {
+  const list = picked(); if (!list.length) return alert("Chọn thiết bị cần khoá.");
+  if (!confirm(`Khoá ngay ${list.length} thiết bị?`)) return;
+  list.forEach(([ci, di]) => { data.customers[ci].devices[di].valid_until = L.lockNow(Date.now()); });
+  change(`Khoá ngay ${list.length} thiết bị.`);
+};
+$("extendAll").onclick = () => {
+  if (!confirm("Gia hạn MỌI thiết bị thêm 1 tháng?")) return;
+  devices().forEach(({device}) => { device.valid_until = L.extend(device.valid_until, Date.now(), 1, cfg().lockDay); });
+  change("Gia hạn tất cả thêm 1 tháng.");
+};
+$("addCustomer").onclick = () => { if (data) addCustomer(); };
+$("message").oninput = $("strict").onchange = () => { dirty = true; render(); };
+$("publish").onclick = publish;
+window.addEventListener("beforeunload", (event) => { if (dirty) { event.preventDefault(); event.returnValue = ""; } });
+for (const key of ["privateRepo", "publicRepo", "lockDay", "trialDays"]) $(key).value = cfg()[key];
+load().catch((error) => { say("Lỗi: " + error.message); $("settings").hidden = false; });
+</script>
+</body>
+</html>
